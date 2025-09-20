@@ -208,7 +208,7 @@ def run_bot():
                 log_trade(stock, "Breakout", entry, stop, target, qty)
                 send_telegram_message(f"🚀 Breakout in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
 
-             save_chart(data, stock)
+            save_chart(data, stock)
 
         except Exception as e:
             print(f"Signal error for {stock}: {e}")
@@ -222,3 +222,4 @@ def run_bot():
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
     run_bot()
+
