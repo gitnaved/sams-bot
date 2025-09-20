@@ -200,16 +200,16 @@ def run_bot():
             stop = entry * 0.96
             target = entry * 1.06
             qty = calculate_position_size(capital, risk_per_trade, entry, stop)
-
+    
             if detect_pullback(data):
                 log_trade(stock, "Pullback", entry, stop, target, qty)
                 send_telegram_message(f"📥 Pullback in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
             elif detect_breakout(data):
                 log_trade(stock, "Breakout", entry, stop, target, qty)
                 send_telegram_message(f"🚀 Breakout in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
-
+    
             save_chart(data, stock)
-
+    
         except Exception as e:
             print(f"Signal error for {stock}: {e}")
 
@@ -222,4 +222,5 @@ def run_bot():
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
     run_bot()
+
 
