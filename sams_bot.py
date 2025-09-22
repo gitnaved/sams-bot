@@ -71,26 +71,34 @@ def classify_market_regime() -> str:
 
 # ─── Dynamic Stock Universe ─────────────────────────────
 def fetch_nifty500_symbols(max_retries: int = 3) -> List[str]:
-    url = "https://en.wikipedia.org/wiki/NIFTY_500"
+    wiki_url = "https://en.wikipedia.org/wiki/NIFTY_500"
+    nse_url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+
     for attempt in range(1, max_retries + 1):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
+            resp = requests.get(wiki_url, headers=HEADERS, timeout=10)
             resp.raise_for_status()
             tables = pd.read_html(resp.text)
-            target = None
             for df in tables:
                 if "Symbol" in df.columns:
-                    target = df
-                    break
-            if target is None:
-                raise ValueError("NIFTY 500 table not found.")
-            symbols = target["Symbol"].dropna().astype(str).str.strip().unique().tolist()
-            logging.info(f"Fetched {len(symbols)} NIFTY 500 symbols.")
-            return symbols
+                    symbols = df["Symbol"].dropna().astype(str).str.strip().unique().tolist()
+                    logging.info(f"Fetched {len(symbols)} NIFTY 500 symbols from Wikipedia.")
+                    return symbols
         except Exception as e:
-            logging.warning(f"NIFTY 500 fetch attempt {attempt} failed: {e}")
+            logging.warning(f"NIFTY 500 fetch attempt {attempt} from Wikipedia failed: {e}")
             time.sleep(1.5)
-    raise RuntimeError("Failed to fetch NIFTY 500 symbols.")
+
+    # Fallback to NSE CSV
+    try:
+        df = pd.read_csv(nse_url)
+        if "Symbol" in df.columns:
+            symbols = df["Symbol"].dropna().astype(str).str.strip().unique().tolist()
+            logging.info(f"Fetched {len(symbols)} NIFTY 500 symbols from NSE CSV.")
+            return symbols
+    except Exception as e:
+        logging.error(f"Fallback to NSE CSV failed: {e}")
+
+    raise RuntimeError("Failed to fetch NIFTY 500 symbols from both Wikipedia and NSE.")
 
 # ─── Screener Scraping ──────────────────────────────────
 def _extract_text(soup: BeautifulSoup, label: str) -> Optional[str]:
