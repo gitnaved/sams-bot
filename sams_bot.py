@@ -1,96 +1,167 @@
-# ─── Imports ─────────────────────────────────────────────
-import requests
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import time
+import logging
 import datetime
+from typing import List, Dict, Optional
+
+import requests
 import pandas as pd
-import yfinance as yf
+import matplotlib
+matplotlib.use("Agg")  # for headless environments
 import matplotlib.pyplot as plt
+import yfinance as yf
 from bs4 import BeautifulSoup
 
-# ─── Telegram Alert Function ─────────────────────────────
-def send_telegram_message(message):
-    bot_token = '7827996384:AAF8DvSLjHM78Kyhb4YjRDGt-pm5twW27jI'
-    chat_id = '5831499682'
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {'chat_id': chat_id, 'text': message}
-    requests.post(url, data=payload)
+# ─── Logging & Config ───────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
 
-# ─── Market Regime Engine ────────────────────────────────
-def classify_market_regime(nifty, sma_200, vix, fii_net, dii_net):
-    regime = "Neutral"
-    if nifty > sma_200 and vix < 15 and fii_net > 0 and dii_net > 0:
-        regime = "Bullish"
-    elif nifty < sma_200 or vix > 20 or (fii_net < 0 and dii_net < 0):
-        regime = "Bearish"
-    return regime
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+REQUEST_TIMEOUT = 12
+SCRAPER_SLEEP = 0.5  # polite delay between Screener requests
 
-# ─── Dynamic Stock List ──────────────────────────────────
-def fetch_nifty500_symbols():
+EXCLUDED_SECTORS = {
+    "Alcoholic Beverages",
+    "Breweries & Distilleries",
+    "Media",
+    "Media & Entertainment",
+    "Banking",
+    "Finance",
+    "Financial Services",
+    "NBFC"
+}
+
+# ─── Telegram Alerts ────────────────────────────────────
+def send_telegram_message(text: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logging.warning("Telegram credentials not set.")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        logging.warning(f"Telegram send error: {e}")
+
+# ─── Market Regime ──────────────────────────────────────
+def classify_market_regime() -> str:
+    try:
+        nifty = yf.download("^NSEI", period="2y", interval="1d", progress=False)["Close"].dropna()
+        vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False)["Close"].dropna()
+        if len(nifty) < 220 or len(vix) < 10:
+            return "Neutral"
+        sma_200 = nifty.rolling(200).mean().iloc[-1]
+        price = nifty.iloc[-1]
+        vix_last = vix.iloc[-1]
+        if price > sma_200 and vix_last < 15:
+            return "Bullish"
+        if price < sma_200 or vix_last > 20:
+            return "Bearish"
+        return "Neutral"
+    except Exception as e:
+        logging.warning(f"Regime classification error: {e}")
+        return "Neutral"
+
+# ─── Dynamic Stock Universe ─────────────────────────────
+def fetch_nifty500_symbols(max_retries: int = 3) -> List[str]:
     url = "https://en.wikipedia.org/wiki/NIFTY_500"
-    tables = pd.read_html(url)
-    df = tables[1]
-    symbols = df['Symbol'].dropna().unique().tolist()
-    return symbols
+    for attempt in range(1, max_retries + 1):
+        try:
+            tables = pd.read_html(url)
+            target = None
+            for df in tables:
+                if "Symbol" in df.columns:
+                    target = df
+                    break
+            if target is None:
+                raise ValueError("NIFTY 500 table not found.")
+            symbols = target["Symbol"].dropna().astype(str).str.strip().unique().tolist()
+            logging.info(f"Fetched {len(symbols)} NIFTY 500 symbols.")
+            return symbols
+        except Exception as e:
+            logging.warning(f"NIFTY 500 fetch attempt {attempt} failed: {e}")
+            time.sleep(1.5)
+    raise RuntimeError("Failed to fetch NIFTY 500 symbols.")
 
-# ─── Screener Scraper ────────────────────────────────────
-def get_fundamentals(symbol):
+# ─── Screener Scraping ──────────────────────────────────
+def _extract_text(soup: BeautifulSoup, label: str) -> Optional[str]:
+    tag = soup.find(string=lambda t: isinstance(t, str) and t.strip() == label)
+    if tag:
+        nxt = tag.find_next()
+        if nxt and hasattr(nxt, "get_text"):
+            return nxt.get_text(strip=True)
+    return None
+
+def _to_float(val: Optional[str]) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        clean = val.replace("Cr", "").replace("%", "").replace(",", "").strip()
+        return float(clean)
+    except Exception:
+        return None
+
+def get_fundamentals(symbol: str) -> Optional[Dict[str, float]]:
     url = f"https://www.screener.in/company/{symbol}/"
     try:
-        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        def extract(label):
-            tag = soup.find(text=label)
-            return tag.find_next().text if tag else None
-
-        def clean(val):
-            return float(val.replace("Cr", "").replace("%", "").replace(",", "").strip())
-
-        market_cap = clean(extract("Market Cap"))
-        roce = clean(extract("ROCE"))
-        debt_to_equity = clean(extract("Debt to equity"))
-        sales_growth = clean(extract("Sales growth"))
-        profit_growth = clean(extract("Profit growth"))
-
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        market_cap = _to_float(_extract_text(soup, "Market Cap"))
+        roce = _to_float(_extract_text(soup, "ROCE"))
+        d2e = _to_float(_extract_text(soup, "Debt to equity"))
+        sales_g = _to_float(_extract_text(soup, "Sales growth"))
+        profit_g = _to_float(_extract_text(soup, "Profit growth"))
+        if None in (market_cap, roce, d2e, sales_g, profit_g):
+            return None
         return {
             "market_cap": market_cap,
             "roce": roce,
-            "debt_to_equity": debt_to_equity,
-            "sales_growth_5y": sales_growth,
-            "profit_growth_5y": profit_growth
+            "debt_to_equity": d2e,
+            "sales_growth_5y": sales_g,
+            "profit_growth_5y": profit_g
         }
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+    except Exception:
         return None
 
-def get_sector(symbol):
+def get_sector(symbol: str) -> Optional[str]:
     url = f"https://www.screener.in/company/{symbol}/"
     try:
-        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(response.text, 'html.parser')
-        tag = soup.find("span", text="Sector")
-        if tag:
-            sector = tag.find_next("a").text.strip()
-            return sector
-    except Exception as e:
-        print(f"Sector fetch error for {symbol}: {e}")
-    return None
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, "lxml")
+        sector_label = soup.find("span", string=lambda t: isinstance(t, str) and t.strip() == "Sector")
+        if sector_label:
+            link = sector_label.find_next("a")
+            if link:
+                return link.get_text(strip=True)
+        return None
+    except Exception:
+        return None
 
-# ─── Sector Filter ───────────────────────────────────────
-EXCLUDED_SECTORS = ["Alcoholic Beverages", "Media", "Banking", "Finance"]
-
-# ─── Fundamental Filter ──────────────────────────────────
-def passes_fundamental_filters(stock):
+# ─── Filters ────────────────────────────────────────────
+def passes_fundamental_filters(f: Dict[str, float]) -> bool:
     return (
-        stock['market_cap'] > 500 and
-        stock['debt_to_equity'] < 0.2 and
-        stock['roce'] > 20 and
-        stock['sales_growth_5y'] > 10 and
-        stock['profit_growth_5y'] > 15
+        f["market_cap"] > 500 and
+        f["debt_to_equity"] < 0.2 and
+        f["roce"] > 20 and
+        f["sales_growth_5y"] > 10 and
+        f["profit_growth_5y"] > 15
     )
 
-# ─── Technical Filter ────────────────────────────────────
-def passes_technical_filters(stock_data):
-    close = stock_data['Close']
+def passes_technical_filters(df: pd.DataFrame) -> bool:
+    if df is None or df.empty or len(df) < 210:
+        return False
+    close = df["Close"]
     price = close.iloc[-1]
     sma_20 = close.rolling(20).mean().iloc[-1]
     sma_50 = close.rolling(50).mean().iloc[-1]
@@ -98,129 +169,29 @@ def passes_technical_filters(stock_data):
     sma_200 = close.rolling(200).mean().iloc[-1]
     return price > sma_20 and price > sma_50 and price > sma_100 and price > sma_200
 
-# ─── Entry Signal Generator ──────────────────────────────
-def detect_pullback(stock_data):
-    close = stock_data['Close']
+# ─── Signals ────────────────────────────────────────────
+def detect_pullback(df: pd.DataFrame) -> bool:
+    close = df["Close"]
     ema_20 = close.ewm(span=20).mean()
     sma_200 = close.rolling(200).mean()
-    uptrend = close.iloc[-1] > sma_200.iloc[-1]
-    pullback = close.iloc[-2] < ema_20.iloc[-2] and close.iloc[-1] > ema_20.iloc[-1]
-    return uptrend and pullback
+    return close.iloc[-1] > sma_200.iloc[-1] and close.iloc[-2] < ema_20.iloc[-2] and close.iloc[-1] > ema_20.iloc[-1]
 
-def detect_breakout(stock_data):
-    close = stock_data['Close']
-    high = stock_data['High']
-    resistance = max(close[-10:-3])
-    breakout = close.iloc[-1] > resistance and high.iloc[-1] > resistance
-    return breakout
+def detect_breakout(df: pd.DataFrame) -> bool:
+    close = df["Close"]
+    high = df["High"]
+    resistance = close.iloc[-10:-3].max()
+    return close.iloc[-1] > resistance and high.iloc[-1] > resistance
 
-# ─── Risk Manager ────────────────────────────────────────
-def calculate_position_size(capital, risk_per_trade, entry_price, stop_loss_price):
-    risk_amount = capital * risk_per_trade
-    stop_loss_points = abs(entry_price - stop_loss_price)
-    quantity = int(risk_amount / stop_loss_points)
-    return quantity
+# ─── Risk & Journaling ──────────────────────────────────
+def calculate_position_size(capital: float, risk_per_trade: float, entry: float, stop: float) -> int:
+    stop_points = abs(entry - stop)
+    if stop_points <= 0:
+        return 0
+    return int((capital * risk_per_trade) // stop_points)
 
-# ─── Chart Snapshot ──────────────────────────────────────
-def save_chart(stock_data, stock_symbol):
+def save_chart(df: pd.DataFrame, symbol: str) -> str:
     plt.figure(figsize=(10, 4))
-    plt.plot(stock_data['Close'], label='Close Price')
-    plt.title(f"{stock_symbol} Price Chart")
-    plt.xlabel("Date")
-    plt.ylabel("Price")
-    plt.legend()
-    filename = f"{stock_symbol}_chart.png"
-    plt.savefig(filename)
-    plt.close()
-    return filename
-
-# ─── Journaling Module ───────────────────────────────────
-def log_trade(stock, signal_type, entry_price, stop_loss, target_price, quantity):
-    log = {
-        'timestamp': datetime.datetime.now(),
-        'stock': stock,
-        'signal': signal_type,
-        'entry': entry_price,
-        'stop_loss': stop_loss,
-        'target': target_price,
-        'quantity': quantity
-    }
-    df = pd.DataFrame([log])
-    df.to_csv('trade_log.csv', mode='a', header=False, index=False)
-
-# ─── Main Bot Logic ──────────────────────────────────────
-def run_bot():
-    print(f"[{datetime.datetime.now()}] Running SAMS bot...")
-
-    # ── Sample Market Regime Inputs ──
-    nifty = 24741
-    sma_200 = 24000
-    vix = 9.88
-    fii_net = -1304.91
-    dii_net = 1821.23
-
-    regime = classify_market_regime(nifty, sma_200, vix, fii_net, dii_net)
-    send_telegram_message(f"📊 Market Regime: {regime}")
-
-    if regime == "Bearish":
-        send_telegram_message("🚫 Market is bearish. No trades today.")
-        return
-
-    # ── Fetch Dynamic Stock List ──
-    symbols = fetch_nifty500_symbols()
-    qualified_fundamentals = []
-
-    for symbol in symbols:
-        sector = get_sector(symbol)
-        if sector and sector in EXCLUDED_SECTORS:
-            continue
-
-        data = get_fundamentals(symbol)
-        if data and passes_fundamental_filters(data):
-            qualified_fundamentals.append(symbol)
-
-    # ── Apply Technical Filters ──
-    qualified_stocks = []
-    for stock in qualified_fundamentals:
-        try:
-            data = yf.download(f"{stock}.NS", period='6mo', interval='1d')
-            if passes_technical_filters(data):
-                qualified_stocks.append(stock)
-        except Exception as e:
-            print(f"Error fetching data for {stock}: {e}")
-
-    # ── Entry Signal Detection ──
-    capital = 100000
-    risk_per_trade = 0.02
-
-    for stock in qualified_stocks:
-        try:
-            data = yf.download(f"{stock}.NS", period='6mo', interval='1d')
-            entry = data['Close'].iloc[-1]
-            stop = entry * 0.96
-            target = entry * 1.06
-            qty = calculate_position_size(capital, risk_per_trade, entry, stop)
-    
-            if detect_pullback(data):
-                log_trade(stock, "Pullback", entry, stop, target, qty)
-                send_telegram_message(f"📥 Pullback in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
-            elif detect_breakout(data):
-                log_trade(stock, "Breakout", entry, stop, target, qty)
-                send_telegram_message(f"🚀 Breakout in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
-    
-            save_chart(data, stock)
-    
-        except Exception as e:
-            print(f"Signal error for {stock}: {e}")
-
-    # ── Summary Alert ──
-    if qualified_stocks:
-        send_telegram_message(f"✅ Stocks passing SAMS filters: {', '.join(qualified_stocks)}")
-    else:
-        send_telegram_message("📭 No stocks passed SAMS filters today.")
-
-# ─── Entry Point ─────────────────────────────────────────
-if __name__ == "__main__":
-    run_bot()
-
-
+    plt.plot(df["Close"], label="Close", color="#1f77b4")
+    plt.plot(df["Close"].rolling(20).mean(), label="SMA20", color="#ff7f0e", alpha=0.8)
+    plt.plot(df["Close"].rolling(50).mean(), label="SMA50", color="#2ca02c", alpha=0.8)
+    plt.plot
