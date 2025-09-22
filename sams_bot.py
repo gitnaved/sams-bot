@@ -55,16 +55,20 @@ def classify_market_regime() -> str:
     try:
         nifty = yf.download("^NSEI", period="2y", interval="1d", progress=False, auto_adjust=False)["Close"].dropna()
         vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False, auto_adjust=False)["Close"].dropna()
+
         if len(nifty) < 220 or len(vix) < 10:
             return "Neutral"
+
         sma_200 = float(nifty.rolling(200).mean().iloc[-1])
         price = float(nifty.iloc[-1])
         vix_last = float(vix.iloc[-1])
+
         if price > sma_200 and vix_last < 15:
             return "Bullish"
         if price < sma_200 or vix_last > 20:
             return "Bearish"
         return "Neutral"
+
     except Exception as e:
         logging.warning(f"Regime classification error: {e}")
         return "Neutral"
@@ -294,4 +298,4 @@ def run_bot():
 
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
-    run_bot()
+    run_bot()]
