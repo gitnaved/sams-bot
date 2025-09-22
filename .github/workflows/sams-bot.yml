@@ -2,8 +2,8 @@ name: Run SAMS Bot
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'  # Runs at 6:30 PM IST (13:00 UTC)
-  workflow_dispatch:        # Allows manual trigger from GitHub
+    - cron: '0 13 * * 1-5'  # Runs at 13:00 UTC = 6:30 PM IST, Mon–Fri
+  workflow_dispatch:        # Allows manual trigger
 
 jobs:
   run-bot:
@@ -22,4 +22,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run SAMS bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python sams_bot.py
