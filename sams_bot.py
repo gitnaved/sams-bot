@@ -194,4 +194,95 @@ def save_chart(df: pd.DataFrame, symbol: str) -> str:
     plt.plot(df["Close"], label="Close", color="#1f77b4")
     plt.plot(df["Close"].rolling(20).mean(), label="SMA20", color="#ff7f0e", alpha=0.8)
     plt.plot(df["Close"].rolling(50).mean(), label="SMA50", color="#2ca02c", alpha=0.8)
-    plt.plot
+        plt.plot(df["Close"].rolling(200).mean(), label="SMA200", color="#d62728", alpha=0.8)
+    plt.title(f"{symbol} Price Chart")
+    plt.xlabel("Date")
+    plt.ylabel("Price")
+    plt.legend()
+    filename = f"{symbol}_chart.png"
+    plt.savefig(filename)
+    plt.close()
+    return filename
+
+def log_trade(stock: str, signal_type: str, entry_price: float, stop_loss: float, target_price: float, quantity: int):
+    log = {
+        'timestamp': datetime.datetime.now(),
+        'stock': stock,
+        'signal': signal_type,
+        'entry': entry_price,
+        'stop_loss': stop_loss,
+        'target': target_price,
+        'quantity': quantity
+    }
+    df = pd.DataFrame([log])
+    df.to_csv('trade_log.csv', mode='a', header=not os.path.exists('trade_log.csv'), index=False)
+
+# ─── Main Bot Logic ──────────────────────────────────────
+def run_bot():
+    logging.info("Running SAMS bot...")
+
+    regime = classify_market_regime()
+    send_telegram_message(f"📊 Market Regime: {regime}")
+
+    if regime == "Bearish":
+        send_telegram_message("🚫 Market is bearish. No trades today.")
+        return
+
+    symbols = fetch_nifty500_symbols()
+    qualified_fundamentals = []
+
+    for symbol in symbols:
+        sector = get_sector(symbol)
+        if sector and sector in EXCLUDED_SECTORS:
+            continue
+        data = get_fundamentals(symbol)
+        time.sleep(SCRAPER_SLEEP)
+        if data and passes_fundamental_filters(data):
+            qualified_fundamentals.append(symbol)
+
+    qualified_stocks = []
+    for stock in qualified_fundamentals:
+        try:
+            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False)
+            if passes_technical_filters(data):
+                qualified_stocks.append(stock)
+        except Exception as e:
+            logging.warning(f"Error fetching data for {stock}: {e}")
+
+    capital = 100000
+    risk_per_trade = 0.02
+    signaled = []
+
+    for stock in qualified_stocks:
+        try:
+            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False)
+            if data is None or data.empty:
+                continue
+            entry = data['Close'].iloc[-1]
+            stop = entry * 0.96
+            target = entry * 1.06
+            qty = calculate_position_size(capital, risk_per_trade, entry, stop)
+
+            if detect_pullback(data):
+                log_trade(stock, "Pullback", entry, stop, target, qty)
+                send_telegram_message(f"📥 Pullback in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
+                signaled.append(stock)
+            elif detect_breakout(data):
+                log_trade(stock, "Breakout", entry, stop, target, qty)
+                send_telegram_message(f"🚀 Breakout in {stock}: Buy {qty} @ ₹{entry:.2f}, SL ₹{stop:.2f}, Target ₹{target:.2f}")
+                signaled.append(stock)
+
+            save_chart(data, stock)
+
+        except Exception as e:
+            logging.warning(f"Signal error for {stock}: {e}")
+
+    if signaled:
+        send_telegram_message(f"✅ Signals today: {', '.join(signaled)}")
+    else:
+        send_telegram_message("📭 No actionable signals today.")
+
+# ─── Entry Point ─────────────────────────────────────────
+if __name__ == "__main__":
+    run_bot()
+
