@@ -194,7 +194,7 @@ def save_chart(df: pd.DataFrame, symbol: str) -> str:
     plt.plot(df["Close"], label="Close", color="#1f77b4")
     plt.plot(df["Close"].rolling(20).mean(), label="SMA20", color="#ff7f0e", alpha=0.8)
     plt.plot(df["Close"].rolling(50).mean(), label="SMA50", color="#2ca02c", alpha=0.8)
-        plt.plot(df["Close"].rolling(200).mean(), label="SMA200", color="#d62728", alpha=0.8)
+    plt.plot(df["Close"].rolling(200).mean(), label="SMA200", color="#d62728", alpha=0.8)
     plt.title(f"{symbol} Price Chart")
     plt.xlabel("Date")
     plt.ylabel("Price")
@@ -285,4 +285,5 @@ def run_bot():
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
     run_bot()
+
 
