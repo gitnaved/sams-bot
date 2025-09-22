@@ -1,8 +1,7 @@
 pandas
-numpy
-requests
 yfinance
 matplotlib
 beautifulsoup4
 lxml
 html5lib
+requests
