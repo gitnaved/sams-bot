@@ -298,4 +298,4 @@ def run_bot():
 
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
-    run_bot()]
+    run_bot()
