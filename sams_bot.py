@@ -10,7 +10,7 @@ from typing import List, Dict, Optional
 import requests
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # for headless environments
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yfinance as yf
 from bs4 import BeautifulSoup
@@ -21,9 +21,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 REQUEST_TIMEOUT = 12
-SCRAPER_SLEEP = 0.5  # polite delay between Screener requests
+SCRAPER_SLEEP = 0.5
 
 EXCLUDED_SECTORS = {
     "Alcoholic Beverages",
@@ -53,13 +53,13 @@ def send_telegram_message(text: str) -> None:
 # ─── Market Regime ──────────────────────────────────────
 def classify_market_regime() -> str:
     try:
-        nifty = yf.download("^NSEI", period="2y", interval="1d", progress=False)["Close"].dropna()
-        vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False)["Close"].dropna()
+        nifty = yf.download("^NSEI", period="2y", interval="1d", progress=False, auto_adjust=False)["Close"].dropna()
+        vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False, auto_adjust=False)["Close"].dropna()
         if len(nifty) < 220 or len(vix) < 10:
             return "Neutral"
-        sma_200 = nifty.rolling(200).mean().iloc[-1]
-        price = nifty.iloc[-1]
-        vix_last = vix.iloc[-1]
+        sma_200 = float(nifty.rolling(200).mean().iloc[-1])
+        price = float(nifty.iloc[-1])
+        vix_last = float(vix.iloc[-1])
         if price > sma_200 and vix_last < 15:
             return "Bullish"
         if price < sma_200 or vix_last > 20:
@@ -74,7 +74,9 @@ def fetch_nifty500_symbols(max_retries: int = 3) -> List[str]:
     url = "https://en.wikipedia.org/wiki/NIFTY_500"
     for attempt in range(1, max_retries + 1):
         try:
-            tables = pd.read_html(url)
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            tables = pd.read_html(resp.text)
             target = None
             for df in tables:
                 if "Symbol" in df.columns:
@@ -243,7 +245,7 @@ def run_bot():
     qualified_stocks = []
     for stock in qualified_fundamentals:
         try:
-            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False)
+            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False, auto_adjust=False)
             if passes_technical_filters(data):
                 qualified_stocks.append(stock)
         except Exception as e:
@@ -255,7 +257,7 @@ def run_bot():
 
     for stock in qualified_stocks:
         try:
-            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False)
+            data = yf.download(f"{stock}.NS", period='6mo', interval='1d', progress=False, auto_adjust=False)
             if data is None or data.empty:
                 continue
             entry = data['Close'].iloc[-1]
@@ -285,5 +287,3 @@ def run_bot():
 # ─── Entry Point ─────────────────────────────────────────
 if __name__ == "__main__":
     run_bot()
-
-
